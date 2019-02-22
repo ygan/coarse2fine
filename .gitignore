@@ -106,5 +106,4 @@ ENV/
 acl18coarse2fine_data_model.zip
 *.pt
 
-GlobalAttention.odg
 wikisql/table.IO
