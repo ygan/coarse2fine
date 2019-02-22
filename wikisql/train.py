@@ -14,7 +14,7 @@ import table.ModelConstructor
 import table.modules
 from table.Utils import set_seed
 import opts
-from tensorboard_logger import Logger
+#from tensorboard_logger import Logger
 from path import Path
 
 
@@ -30,11 +30,30 @@ def get_save_index(save_dir):
 
 parser = argparse.ArgumentParser(description='train.py')
 
+# parser.add_argument('-start_checkpoint_at', type=int, default=30)
+# parser.add_argument('-split_type', default='incell')
+# parser.add_argument('-epochs', type=int, default=40)
+# parser.add_argument('-global_attention', default='general')
+# parser.add_argument('-fix_word_vecs')
+# parser.add_argument('-dropout', type=float, default=0.5)
+# parser.add_argument('-score_size', type=int, default=64)
+# parser.add_argument('-attn_hidden', type=int, default=64)
+# parser.add_argument('-rnn_size', type=int, default=250)
+# parser.add_argument('-co_attention')
+# parser.add_argument('-data', default="~/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/")
+# parser.add_argument('-save_dir', default="~/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/")
+
+
 # opts.py
 opts.model_opts(parser)
 opts.train_opts(parser)
 
 opt = parser.parse_args()
+
+#gan:
+opt.fix_word_vecs = True
+opt.co_attention  = True
+#############################
 
 opt.save_path = os.path.join(opt.save_dir, 'run.%d' %
                              (get_save_index(opt.save_dir),))
@@ -82,11 +101,20 @@ def report_func(epoch, batch, num_batches,
 
 
 def train_model(model, train_data, valid_data, fields, optim):
+
+    # If repeat=True, program will forever run in: 'for b, batch in enumerate(train_iter):' until you manually break
     train_iter = table.IO.OrderedIterator(
         dataset=train_data, batch_size=opt.batch_size, device=opt.gpuid[0], repeat=False)
+
+    # 'train=False' will also let repeat=False. So here do not need to define repeat=False.
+    # sort_within_batch = False: The element in batch is in ascending order according to their length. Else in descending
+    # sort=True, order the examples of dataset. And train=False means the batch will not be Random Shuffler.
+    # Since the order in train is (and it should be) random which is different from here, it dosen't need to define: sort=True, sort_within_batch=False
     valid_iter = table.IO.OrderedIterator(
         dataset=valid_data, batch_size=opt.batch_size, device=opt.gpuid[0], train=False, sort=True, sort_within_batch=False)
 
+    # default agg_sample_rate is 0.5; default smooth_eps is 0
+    # Loss is sum(negative log likelihood)
     train_loss = table.Loss.TableLossCompute(opt.agg_sample_rate, smooth_eps=model.opt.smooth_eps).cuda()
     valid_loss = table.Loss.TableLossCompute(opt.agg_sample_rate, smooth_eps=model.opt.smooth_eps).cuda()
 

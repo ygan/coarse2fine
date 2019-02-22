@@ -24,6 +24,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+data_model/
+.vscode/
+wiki/.vscode/
+.idea/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -99,3 +103,8 @@ ENV/
 
 # mypy
 .mypy_cache/
+acl18coarse2fine_data_model.zip
+*.pt
+
+GlobalAttention.odg
+wikisql/table.IO

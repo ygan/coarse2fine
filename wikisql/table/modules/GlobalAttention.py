@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from table.modules.UtilClass import BottleLinear
+from table.modules.UtilClass import BottleLinear,BottleLayerNorm
 from table.Utils import aeq
 import table.IO
 
@@ -39,7 +39,7 @@ class GlobalAttention(nn.Module):
     $$a_j = softmax(v_a^T \tanh(W_a q + U_a h_j) )$$.
 
     """
-
+    # attn_type is general, attn_hidden is 64
     def __init__(self, dim, is_transform_out, attn_type="dot", attn_hidden=0):
         super(GlobalAttention, self).__init__()
 
@@ -74,12 +74,17 @@ class GlobalAttention(nn.Module):
         self.tanh = nn.Tanh()
         self.mask = None
 
+    # tbl_mask. When we create tbl_mask, the pad token is 1. which means valid data is 0, invalid data is 1.
     def applyMask(self, mask):
         self.mask = mask
 
     def applyMaskBySeqBatch(self, q):
-        self.applyMask(q.data.eq(table.IO.PAD).t().contiguous().unsqueeze(0))
+        # let z = q.data.eq(table.IO.PAD).t().contiguous().unsqueeze(0). The shape of z is (1*batch*q_len)
+        # z contain 0 and 1. If the element eq to pad token, it will be 1, else 0.
+        # So the mask 1 means pad token and invalid data similar to tbl_mask.
+        self.applyMask(q.data.eq(table.IO.PAD).t().contiguous().unsqueeze(0))#
 
+    
     def score(self, h_t, h_s):
         """
         h_t (FloatTensor): batch x tgt_len x dim
@@ -119,6 +124,10 @@ class GlobalAttention(nn.Module):
 
             return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
 
+
+    # input = query, is src
+    # context = value, is tbl
+    # align is key, come from query and value.
     def forward(self, input, context):
         """
         input (FloatTensor): batch x tgt_len x dim: decoder's rnn's output.
@@ -142,21 +151,23 @@ class GlobalAttention(nn.Module):
             beam_, batch_, sourceL_ = self.mask.size()
             aeq(batch, batch_ * beam_)
             aeq(sourceL, sourceL_)
-
+        
         # compute attention scores, as in Luong et al.
-        align = self.score(input, context)
+        align = self.score(input, context) # key
 
         if self.mask is not None:
             mask_ = self.mask.view(batch, 1, sourceL)  # make it broardcastable
-            align.data.masked_fill_(mask_, -float('inf'))
+            # When mask_ equal 1, it means a invalid data. so give a Negative infinity to it.
+            # Negative infinity will become 0 in softmax.
+            align.data.masked_fill_(mask_, -float('inf'))   
 
         # Softmax to normalize attention weights
         align_vectors = self.sm(align.view(batch * targetL, sourceL))
-        align_vectors = align_vectors.view(batch, targetL, sourceL)
-
+        align_vectors = align_vectors.view(batch, targetL, sourceL)  # Final key!!
+                
         # each context vector c_t is the weighted average
         # over all the source hidden states
-        c = torch.bmm(align_vectors, context)
+        c = torch.bmm(align_vectors, context)   # key and value, get final c
 
         # concatenate
         concat_c = torch.cat([c, input], 2)

@@ -96,6 +96,7 @@ class Trainer(object):
         self.optim = optim
 
         # Set model in training mode.
+        # This has any effect only on modules such as Dropout or BatchNorm.
         self.model.train()
 
     def forward(self, batch, criterion):

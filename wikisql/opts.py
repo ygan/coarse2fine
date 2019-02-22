@@ -90,10 +90,10 @@ def preprocess_opts(parser):
 
 def train_opts(parser):
     # Model loading/saving options
-    parser.add_argument('-data', default='',
+    parser.add_argument('-data', default='/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/',
                         help="""Path prefix to the "train.pt" and
                         "valid.pt" file path from preprocess.py""")
-    parser.add_argument('-save_dir', default='',
+    parser.add_argument('-save_dir', default='/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/',
                         help="Model save dir")
     parser.add_argument('-train_from', default='', type=str,
                         help="""If training from a checkpoint then this is the
@@ -113,6 +113,8 @@ def train_opts(parser):
                         with support (-param_init, param_init).
                         Use 0 to not use initialization""")
 
+    # it will be true if -fix_word_vecs come with the python command such as: python xx.py -fix_word_vecs
+    # else it will be false. action='store_true' is important and necessary.
     parser.add_argument('-fix_word_vecs', action='store_true',
                         help="Fix word embeddings on the encoder side.")
     parser.add_argument('-update_word_vecs_after', type=int, default=10,

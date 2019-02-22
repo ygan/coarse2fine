@@ -16,11 +16,11 @@ parser = argparse.ArgumentParser(description='preprocess.py')
 # **Preprocess Options**
 parser.add_argument('-config', help="Read options from this file")
 
-parser.add_argument('-train_anno', default="train.jsonl",
+parser.add_argument('-train_anno', default="/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/annotated_ent/train.jsonl",
                     help="Path to the training annotated data")
-parser.add_argument('-valid_anno', default="dev.jsonl",
+parser.add_argument('-valid_anno', default="/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/annotated_ent/dev.jsonl",
                     help="Path to the validation annotated data")
-parser.add_argument('-test_anno', default="test.jsonl",
+parser.add_argument('-test_anno', default="/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/annotated_ent/test.jsonl",
                     help="Path to the test annotated data")
 
 parser.add_argument('-save_data', default="",
@@ -54,6 +54,7 @@ def main():
     test = table.IO.TableDataset(opt.test_anno, fields, opt, False)
 
     print("Building Vocab...")
+    # There are some chinese (and other language) in the training data. such as: 平安北道. 平安北道 was encode using Unicode as: \u5e73\u5b89\u5317\u9053
     table.IO.TableDataset.build_vocab(train, valid, test, opt)
 
     print("Saving train/valid/fields")

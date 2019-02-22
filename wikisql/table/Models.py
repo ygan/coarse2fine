@@ -6,10 +6,13 @@ from torch.nn.utils.rnn import pack_padded_sequence as pack
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 
 import table
-from table.Utils import aeq, sort_for_pack
+from table.Utils import aeq, sort_for_pack, tensorToCsv2D
 
 
 def _build_rnn(rnn_type, input_size, hidden_size, num_layers, dropout, weight_dropout, bidirectional=False):
+    """
+        rnn output: (seq_len, batch, num_directions * hidden_size)
+    """
     dr = 0 if weight_dropout > 0 else dropout
     rnn = getattr(nn, rnn_type)(input_size, hidden_size,
                                 num_layers=num_layers, dropout=dr, bidirectional=bidirectional)
@@ -21,9 +24,15 @@ def _build_rnn(rnn_type, input_size, hidden_size, num_layers, dropout, weight_dr
     return rnn
 
 
-class RNNEncoder(nn.Module):
-    """ The standard RNN encoder. """
 
+class RNNEncoder(nn.Module):
+
+    """ The standard RNN encoder. """
+    # "rnn" or "brnn"
+    # rnn_type = LSTM; bidirectional = True; num_layers = 1;
+    # hidden_size = 250; dropout = 0.5; opt.lock_dropout = False; weight_dropout = 0;
+    # embeddings = embeddings for Src and tbl, ent_embedding for ent
+    # weight_dropout is the dropout for rnn. if weight_dropout = 0, we will use the parameter dropout as the dropout for rnn.
     def __init__(self, rnn_type, bidirectional, num_layers,
                  hidden_size, dropout, lock_dropout, weight_dropout, embeddings, ent_embedding):
         super(RNNEncoder, self).__init__()
@@ -71,12 +80,28 @@ class RNNEncoder(nn.Module):
 
 
 def encode_unsorted_batch(encoder, tbl, tbl_len):
+    """
+    sort the tbl according to descending tbl_len
+    encoder the sorted tbl, get result
+    re-sort the result to the original order
+    """
     # sort for pack()
+    # tbl_len is a list of number/tensor
+    # tbl_len_sorted is descending order of tbl_len. tbl_len is random order.
+    # tbl_len[idx_sorted[0]] is the biggest number from tbl_len, tbl_len[idx_sorted[0]] is the second biggest.
+    # so, tbl_len[idx_sorted[i]] = tbl_len_sorted[i]
+    # so, tbl_len_sorted[idx_map_back[i]] = tbl_len[i]
     idx_sorted, tbl_len_sorted, idx_map_back = sort_for_pack(tbl_len)
+    
+    # tbl_sorted[0] is the longest data from tbl, tbl_sorted[1] is the second longest, ...
     tbl_sorted = tbl.index_select(1, Variable(
         torch.LongTensor(idx_sorted).cuda(), requires_grad=False))
+
+
     # tbl_context: (seq_len, batch, hidden_size * num_directions)
     __, tbl_context = encoder(tbl_sorted, tbl_len_sorted)
+
+
     # recover the sort for pack()
     v_idx_map_back = Variable(torch.LongTensor(
         idx_map_back).cuda(), requires_grad=False)
@@ -85,6 +110,7 @@ def encode_unsorted_batch(encoder, tbl, tbl_len):
 
 
 class TableRNNEncoder(nn.Module):
+    # opt.split_type is 'incell', opt.merge_type is 'cat'
     def __init__(self, encoder, split_type='incell', merge_type='cat'):
         super(TableRNNEncoder, self).__init__()
         self.split_type = split_type
@@ -103,7 +129,9 @@ class TableRNNEncoder(nn.Module):
             :param tbl_len: length of token list (num_table_header, batch)
             :param tbl_split: table header boundary list
         """
+        # consider it is a encoder:
         tbl_context = encode_unsorted_batch(self.encoder, tbl, tbl_len)
+
         # --> (num_table_header, batch, hidden_size * num_directions)
         if self.split_type == 'outcell':
             batch_index = torch.LongTensor(range(tbl_split.data.size(1))).unsqueeze_(
@@ -111,13 +139,35 @@ class TableRNNEncoder(nn.Module):
             enc_split = tbl_context[tbl_split.data, batch_index, :]
             enc_left, enc_right = enc_split[:-1], enc_split[1:]
         elif self.split_type == 'incell':
+            # batch_index shape: num_table_header - 1, batch
+            # The data of batch_index is: (num_tbl_split - 1) * [0,1,2,..., batch]
             batch_index = torch.LongTensor(range(tbl_split.data.size(1))).unsqueeze_(
                 0).cuda().expand(tbl_split.data.size(0) - 1, tbl_split.data.size(1))
-            split_left = (tbl_split.data[:-1] +
-                          1).clamp(0, tbl_context.size(0) - 1)
+
+            # The shape of split_left is: num_tbl_split - 1, batch
+            # The data of batch_index is: (num_table_header - 1) * [0,1,2,..., batch]
+            # Tbl_split is the index of '<|>' in tbl. 
+            # The tbl is ['<|>', 'state/territory', '<|>', 'text/background', 'colour', '<|>', 'format', ... , '<|>', 'notes', '<|>']
+            # We need Tbl_split since some table header will be splited to two words such as: 'text/background', 'colour'
+            # The example tbl_split here is : [0, 2, 5, 7, 10, 13, 15]
+            # However, in training and aligning data, we will get the tbl_split look like: [0, 2, 5, 7, 10, 13, 15, 0, 0, ... ,0]
+            # So, tbl_split.data[:-1] may be bigger than tbl_context.size(0) - 1. So we need to clamp. If there is no aligning data process, we do not need clamp.
+            split_left = (tbl_split.data[:-1] + 1).clamp(0, tbl_context.size(0) - 1)
+            
+            # different between split_left and split_right:
+            # split_left is the first word on ('<|>')'s right, such as :'state/territory', 'text/background', ...
+            # split_right is the first word on ('<|>')'s left, such as :'state/territory', 'colour', ...
+            # If there is some word between 'text/background' and 'colour', they will be ignored.
+            # enc_left is the decoder output of these specific words.
+
+            # I think here is not good, since original [0, 2, 5, 7, 10, 13, 15, 0, 0, ... ,0] become [1, 3, 6, 8, 11, 14, 16, 1, 1, ... ,1] in split_left
+            # And then so many 1 in the end of the list means so many 'state/territory' in the end of the table header. It should change and optimize.
+            # !!! So the author add a mask for dealing this problem. mask will 'delete' the effect of the final 1,1,1,...,1 
             enc_left = tbl_context[split_left, batch_index, :]
+
             split_right = (tbl_split.data[1:] -
                            1).clamp(0, tbl_context.size(0) - 1)
+
             enc_right = tbl_context[split_right, batch_index, :]
 
         if self.merge_type == 'sub':
@@ -131,6 +181,10 @@ class TableRNNEncoder(nn.Module):
 
 
 class MatchScorer(nn.Module):
+    """
+        Caculate the match value between a sentence and a table.
+        forward return the most match table column score.
+    """
     def __init__(self, input_size, score_size, dropout):
         super(MatchScorer, self).__init__()
         self.score_layer = nn.Sequential(
@@ -142,17 +196,21 @@ class MatchScorer(nn.Module):
 
     def forward(self, q_enc, tbl_enc, tbl_mask):
         """
-        Match and return table column score.
-            :param q_enc: question encoding vectors (batch, rnn_size)
+        Match and return table column score. (retrun the match score of q_enc and tbl_enc, based on tbl_enc) Tell us which tbl_enc we should choose.
+            :param q_enc: question encoding vectors (batch, rnn_size). consider it is a whole sentence. sentence of vector.
             :param tbl_enc: header encoding vectors (num_table_header, batch, rnn_size)
             :param tbl_num: length of token list
         """
+        # Sometimes, q_enc.size(1) will not equal to tbl_enc.size(2).
+        # But I think tbl_enc.size(1) always equal to q_enc.size(1)
+        assert tbl_enc.size(1) == q_enc.size(0)
         q_enc_expand = q_enc.unsqueeze(0).expand(
-            tbl_enc.size(0), tbl_enc.size(1), q_enc.size(1))
+            tbl_enc.size(0), q_enc.size(0), q_enc.size(1))#my change: tbl_enc.size(1) -> q_enc.size(0); it is easier to understand that we are expanding the new q_enc[0] dimension
+
         # (batch, num_table_header, input_size)
         feat = torch.cat((q_enc_expand, tbl_enc), 2).transpose(0, 1)
         # (batch, num_table_header)
-        score = self.score_layer(feat).squeeze(2)
+        score = self.score_layer(feat).squeeze(2)   #batch*len
         # mask scores
         score_mask = score.masked_fill(tbl_mask, -float('inf'))
         # normalize
@@ -235,10 +293,13 @@ class CondDecoder(nn.Module):
         # Update the state with the result.
         state.update_state(hidden)
 
+        # The following stack is useless, so I delete it:
+
         # Concatenates sequence of tensors along a new dimension.
-        outputs = torch.stack(outputs)
-        for k in attns:
-            attns[k] = torch.stack(attns[k])
+        # outputs = torch.stack(outputs)  # dim=0
+
+        # for k in attns:
+        #     attns[k] = torch.stack(attns[k])
 
         return outputs, state, attns
 
@@ -251,7 +312,7 @@ class CondDecoder(nn.Module):
             h = torch.cat([h[0:h.size(0):2], h[1:h.size(0):2]], 2)
         return h
 
-    def init_decoder_state(self, context, enc_hidden):
+    def init_decoder_state(self, context, enc_hidden):  # There will be two elements in the tuple:
         return RNNDecoderState(context, self.hidden_size, tuple([self._fix_enc_hidden(enc_hidden[i]) for i in range(len(enc_hidden))]))
 
     def _run_forward_pass(self, emb, context, state):
@@ -282,7 +343,9 @@ class CondDecoder(nn.Module):
             emb = self.word_dropout(emb)
 
         # Run the forward pass of the RNN.
-        rnn_output, hidden = self.rnn(emb, state.hidden)
+        # emb is conbination of condition_column(cond_col, emb_col), condition_operation(cond_op, emb_op) and condition_word(cond_span, emb_span)
+        # emb is (3*cond_col number, batch, hidden_size). So you can consider 3*cond_col is steps.
+        rnn_output, hidden = self.rnn(emb, state.hidden) # rnn_ouput: (seq_len, batch, num_directions * hidden_size)
 
         # Calculate the attention.
         attn_outputs, attn_scores = self.attn(
@@ -331,6 +394,7 @@ class RNNDecoderState(DecoderState):
             rnnstate (Variable): final hidden state from the encoder.
                 transformed to shape: layers x batch x (directions*dim).
         """
+        # There will be two element in the tuple of rnnstate since there is brnn:
         if not isinstance(rnnstate, tuple):
             self.hidden = (rnnstate,)
         else:
@@ -354,13 +418,15 @@ class RNNDecoderState(DecoderState):
 
 
 class CoAttention(nn.Module):
+    # rnn_type is LSTM, bidirectional is true, num_layers is 1, weight_dropout is 0, 
+    # attn_type is general, attn_hidden is 64
     def __init__(self, rnn_type, bidirectional, num_layers, hidden_size, dropout, weight_dropout, attn_type, attn_hidden):
         super(CoAttention, self).__init__()
 
         num_directions = 2 if bidirectional else 1
         self.hidden_size = hidden_size
         self.no_pack_padded_seq = False
-
+        #rnn_type = 'GRU'
         self.rnn = _build_rnn(rnn_type, 2 * hidden_size, hidden_size //
                               num_directions, num_layers, dropout, weight_dropout, bidirectional)
         self.attn = table.modules.GlobalAttention(
@@ -370,8 +436,9 @@ class CoAttention(nn.Module):
         self.attn.applyMask(tbl_mask.data.unsqueeze(0))
         # attention
         emb, _ = self.attn(
-            q_all.transpose(0, 1).contiguous(),  # (output_len, batch, d)
-            tbl_enc.transpose(0, 1)              # (contxt_len, batch, d)
+            #contiguous make the memory continue?
+            q_all.transpose(0, 1).contiguous(),  # (output_len, batch, d) -> (batch, output_len,  d)
+            tbl_enc.transpose(0, 1)              # (contxt_len, batch, d) -> (batch, contxt_len,  d)
         )
 
         # feed to rnn
@@ -379,14 +446,15 @@ class CoAttention(nn.Module):
             lengths = lengths.view(-1).tolist()
         packed_emb = pack(emb, lengths)
 
-        outputs, hidden_t = self.rnn(packed_emb, None)
+        outputs, hidden_t = self.rnn(packed_emb, None)  
 
-        outputs = unpack(outputs)[0]
+        outputs = unpack(outputs)[0]    # **output** of shape `(seq_len, batch, num_directions * hidden_size)
 
         return hidden_t, outputs
 
 
 class ParserModel(nn.Module):
+    """The whole model"""
     def __init__(self, q_encoder, tbl_encoder, co_attention, agg_classifier, sel_match, lay_classifier, cond_embedding, lay_encoder, cond_decoder, cond_col_match, cond_span_l_match, cond_span_r_match, model_opt, pad_word_index):
         super(ParserModel, self).__init__()
         self.q_encoder = q_encoder
@@ -412,54 +480,91 @@ class ParserModel(nn.Module):
         tbl_enc = self.tbl_encoder(tbl, tbl_len, tbl_split)
         if self.co_attention is not None:
             q_enc, q_all = self.co_attention(q_all, q_len, tbl_enc, tbl_mask)
-        # (num_layers * num_directions, batch, hidden_size)
-        q_ht, q_ct = q_enc
+
+        # The shape of q_ht and q_ct is: (num_layers * num_directions, batch, hidden_size)
+        q_ht, q_ct = q_enc           # LSTM have 2 hidden state
         batch_size = q_ht.size(1)
+
+        # q_ht become (batch, hidden_size * num_directions). It means using a vector to present a sentence.
         q_ht = q_ht[-1] if not self.opt.brnn else q_ht[-2:].transpose(
-            0, 1).contiguous().view(batch_size, -1)
+            0, 1).contiguous().view(batch_size, -1) 
 
         return q_enc, q_all, tbl_enc, q_ht, batch_size
 
-    def select3(self, cond_context, start_index):
-        return cond_context[start_index:cond_context.size(
-            0):3]
 
+    def select3(self, cond_context, start_index):
+        return cond_context[start_index:cond_context.size(0):3] # cond_context.size(0) is end_index; 3 is step
+
+
+    #q, q_len = batch.src
+    #tbl, tbl_len = batch.tbl
+    #cond_op, cond_op_len = batch.cond_op
     def forward(self, q, q_len, ent, tbl, tbl_len, tbl_split, tbl_mask, cond_op, cond_op_len, cond_col, cond_span_l, cond_span_r, lay):
         # encoding
         q_enc, q_all, tbl_enc, q_ht, batch_size = self.enc(
             q, q_len, ent, tbl, tbl_len, tbl_split, tbl_mask)
 
-        # (1) decoding
+        # (1) decoding. predict output:
         agg_out = self.agg_classifier(q_ht)
         sel_out = self.sel_match(q_ht, tbl_enc, tbl_mask)
         lay_out = self.lay_classifier(q_ht)
 
         # (2) decoding
         # emb_op
-        if self.opt.layout_encode == 'rnn':
-            emb_op = encode_unsorted_batch(
+        if self.opt.layout_encode == 'rnn':     #true
+            emb_op = encode_unsorted_batch(     # Why clamp?
                 self.lay_encoder, cond_op, cond_op_len.clamp(min=1))
         else:
             emb_op = self.cond_embedding(cond_op)
-        # emb_col
+
         batch_index = torch.LongTensor(range(batch_size)).unsqueeze_(
-            0).cuda().expand(cond_col.size(0), cond_col.size(1))
-        emb_col = tbl_enc[cond_col.data, batch_index, :]
+            0).cuda().expand(cond_col.size(0), cond_col.size(1))        #2*200
+        
+        # emb_col
+        # cond_col is the column number of table. tbl_enc is length_header*batch*hidden_size
+        # emb_col is the hidden state for cond_col
+        # emb_col: (num_cond, batch, hidden_size)
+        # pad token is 0 which is a valid value, so we will need mask to delete pad token.
+        emb_col = tbl_enc[cond_col.data, batch_index, :]    # cond_col.data: 2 * batch; batch_index: 2 * batch !!!!!!
+        
+        # q_all is length_query*batch*hidden_size
+        # cond_span_l is the left match position in q(query)
         # emb_span_l/r: (num_cond, batch, hidden_size)
-        emb_span_l = q_all[cond_span_l.data, batch_index, :]
+        # we also need to delete pad token in the future.
+        emb_span_l = q_all[cond_span_l.data, batch_index, :]    #2*200*250
         emb_span_r = q_all[cond_span_r.data, batch_index, :]
-        emb_span = self.span_merge(torch.cat([emb_span_l, emb_span_r], 2))
+
+        # After cat, it get a matrix of (num_cond, batch, hidden_size*2), and then merge(*w) to (num_cond, batch, hidden_size)
+        emb_span = self.span_merge(torch.cat([emb_span_l, emb_span_r], 2)) 
+        
         # stack embeddings
-        # (seq_len*3, batch, hidden_size)
-        emb = torch.stack([emb_op, emb_col, emb_span],
+        # the shape of emb_op, emb_col and emb_span is (num_cond*batch*hidden_size)
+        # After stack, the shape become (num_cond, 3, batch, hidden_size)
+        # emb similar to torch.cat((emb_op, emb_col, emb_span),0), but not equal.
+        # emb[0] is emb_op[0], emb[1] is emb_col[0], emb[2] is emb_span[0];
+        # let eee = torch.cat((emb_op, emb_col, emb_span),0)
+        # eee[0] is emb_op[0], eee[1] is emb_op[1], eee[2] is emb_col[0];
+        emb = torch.stack([emb_op, emb_col, emb_span],  #
                           1).view(-1, batch_size, emb_op.size(2))
+        
         # cond decoder
         self.cond_decoder.attn.applyMaskBySeqBatch(q)
-        q_state = self.cond_decoder.init_decoder_state(q_all, q_enc)
+
+        # q_enc contain two hidden state: q_ht and q_ct and q_ct that have same shape:
+        # (num_layers * num_directions, batch, hidden_size) = (1*2, 200, 125)
+        # However, q_ht have been reshaped to (200, 250).
+        q_state = self.cond_decoder.init_decoder_state(q_all, q_enc) # only keep q_enc for hidden state
+
+        # q_state is similar to q_enc that contain q_ht and q_ct
+        # cond_context is the condition embeding cat related (natural word cat table header)
+        # the shape of cond_context is (3*condition_number, batch, hidden_size)
         cond_context, _, _ = self.cond_decoder(emb, q_all, q_state)
+        
         # cond col
-        cond_context_0 = self.select3(cond_context, 0)
-        cond_col_out = self.cond_col_match(cond_context_0, tbl_enc, tbl_mask)
+        cond_context_0 = self.select3(cond_context, 0)  # cond_context_0 is only present cond_col
+        
+        cond_col_out = self.cond_col_match(cond_context_0, tbl_enc, tbl_mask) # check cond_context_0 match which table column. get match scores.
+
         # cond span
         q_mask = Variable(q.data.eq(self.pad_word_index).transpose(
             0, 1), requires_grad=False)

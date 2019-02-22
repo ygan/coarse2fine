@@ -2,7 +2,7 @@ DATANAME=$1
 GPU_ID=$2
 
 PWD_DIR=$(pwd)
-WORK_DIR=$(dirname "$(readlink -f $0)")
+WORK_DIR=$(dirname "$(readlink -f $0)") #https://blog.csdn.net/10km/article/details/51906821
 cd $WORK_DIR
 DATA_DIR=$WORK_DIR/data_model/$DATANAME
 
@@ -33,8 +33,8 @@ fi
 
 if [ $DATANAME = "wikisql" ] ; then
     cd $DATANAME
-    python preprocess.py -train_anno "$DATA_DIR/annotated_ent/train.jsonl" -valid_anno "$DATA_DIR/annotated_ent/dev.jsonl" -test_anno "$DATA_DIR/annotated_ent/test.jsonl" -save_data "$DATA_DIR"
-    CUDA_VISIBLE_DEVICES=$GPU_ID python train.py -start_checkpoint_at 30 -split_type "incell" -epochs 40 -global_attention "general" -fix_word_vecs -dropout 0.5 -score_size 64 -attn_hidden 64 -rnn_size 250 -co_attention -data "$DATA_DIR" -save_dir "$DATA_DIR"
+    #python preprocess.py -train_anno "$DATA_DIR/annotated_ent/train.jsonl" -valid_anno "$DATA_DIR/annotated_ent/dev.jsonl" -test_anno "$DATA_DIR/annotated_ent/test.jsonl" -save_data "$DATA_DIR"
+    #CUDA_VISIBLE_DEVICES=$GPU_ID python train.py -start_checkpoint_at 30 -split_type "incell" -epochs 40 -global_attention "general" -fix_word_vecs -dropout 0.5 -score_size 64 -attn_hidden 64 -rnn_size 250 -co_attention -data "$DATA_DIR" -save_dir "$DATA_DIR"
     CUDA_VISIBLE_DEVICES=$GPU_ID python evaluate.py -split dev -data_path "$DATA_DIR" -model_path "$DATA_DIR/run.*/m_*.pt"
     MODEL_PATH=$(head -n1 $DATA_DIR/dev_best.txt)
     CUDA_VISIBLE_DEVICES=$GPU_ID python evaluate.py -split test -data_path "$DATA_DIR" -model_path "$MODEL_PATH"

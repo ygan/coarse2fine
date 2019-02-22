@@ -4,6 +4,7 @@ from torch.nn.utils import clip_grad_norm
 
 class Optim(object):
 
+    # default optimizer is rmsprop
     def set_parameters(self, params):
         self.params = [p for p in params if p.requires_grad]
         if self.method == 'sgd':

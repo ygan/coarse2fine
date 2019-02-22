@@ -69,7 +69,7 @@ class RNNEncoder(nn.Module):
             if not isinstance(lengths, list):
                 lengths = lengths.view(-1).tolist()
             packed_emb = pack(emb, lengths)
-
+        
         outputs, hidden_t = self.rnn(packed_emb, hidden)
 
         if need_pack:

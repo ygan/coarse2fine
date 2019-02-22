@@ -61,17 +61,23 @@ def join_dicts(*args):
 
 
 class OrderedIterator(torchtext.data.Iterator):
+
+    # it will be run when enumerate OrderedIterator object
     def create_batches(self):
-        if self.train:
+        if self.train:      # bool, training data or not
+            # Different between if and else:
+            # A Random Shuffler batch maker.
             self.batches = torchtext.data.pool(
                 self.data(), self.batch_size,
-                self.sort_key, self.batch_size_fn,
-                random_shuffler=self.random_shuffler)
+                self.sort_key, self.batch_size_fn,    # these are none
+                random_shuffler=self.random_shuffler) # this have defualt defined
         else:
+            # A fixed order batch maker for valid and test.
             self.batches = []
             for b in torchtext.data.batch(self.data(), self.batch_size,
-                                          self.batch_size_fn):
-                self.batches.append(sorted(b, key=self.sort_key))
+                                          self.batch_size_fn):    # this is none
+                # self.sort_key is none
+                self.batches.append(sorted(b, key=self.sort_key)) # The sorted function will not change the obj b
 
 
 def read_anno_json(anno_path):
@@ -82,7 +88,10 @@ def read_anno_json(anno_path):
             # sort by (op, orginal index)
             # cond_list.sort(key=lambda x: (x[1][1], x[0]))
             cond_list.sort(key=lambda x: x[1][1])
-            js['query']['conds'] = [x[1] for x in cond_list]
+            # x[0] is just the index of query condition. All information is in x[1]
+            # x in cond_list, the x just have two dimension. [0] is index, [1] is query condition.
+            # For deleting the index (useless), here can not use: js['query']['conds'] = cond_list
+            js['query']['conds'] = [x[1] for x in cond_list] 
     return js_list
 
 
@@ -100,6 +109,9 @@ class TableDataset(torchtext.data.Dataset):
 
         anno: location of annotated data / js_list
         filter_ex: False - keep all the examples for evaluation (should not have filtered examples); True - filter examples with unmatched spans;
+                   filter_ex only work in creating span_data. If there is no match for span_data and filter_ex is Flase, span_data will be fill in [(0,0)...]
+                   If there is no match for span_data and filter_ex is Flase, span_data will be None.
+                   We hope span_data isn't none in test data. It can be none in train and valid. But why?
         """
         if isinstance(anno, string_types):
             js_list = read_anno_json(anno)
@@ -159,48 +171,74 @@ class TableDataset(torchtext.data.Dataset):
             _map_to_sublist_index(span_data, 1), 'cond_span_r_loss')
 
         # examples: one for each src line or (src, tgt) line pair.
+        # examples will be a list of dict. every dict contain :{'src':.., 'ent':...}
         examples = [join_dicts(*it) for it in zip(src_examples, ent_examples, agg_examples, sel_examples, lay_examples, tbl_examples, tbl_split_examples, tbl_mask_examples,
                                                   cond_op_examples, cond_col_examples, span_l_examples, span_r_examples, cond_col_loss_examples, span_l_loss_examples, span_r_loss_examples)]
+        
         # the examples should not contain None
         len_before_filter = len(examples)
-        examples = list(filter(lambda x: all(
-            (v is not None for k, v in x.items())), examples))
+
+        #delete some item that contain none value from examples list that 
+        examples = list(filter
+            ( lambda x: 
+                all(
+                    (value is not None for key, value in x.items())
+                )
+            , examples
+            )
+        )
+
+
         len_after_filter = len(examples)
         num_filter = len_before_filter - len_after_filter
-        # if num_filter > 0:
-        #     print('Filter #examples (with None): {} / {} = {:.2%}'.format(num_filter,
-        #                                                                   len_before_filter, num_filter / len_before_filter))
+        if num_filter > 0:
+            print('Filter #examples (with None): {} / {} = {:.2%}'.format(num_filter,
+                                                                          len_before_filter, num_filter / len_before_filter))
 
-        len_lay_list = []
-        len_tgt_list = []
-        for ex in examples:
-            has_agg = 0 if int(ex['agg']) == 0 else 1
-            if len(ex['cond_op']) == 0:
-                len_lay_list.append(0)
-                len_tgt_list.append(1 + has_agg + 1)
-            else:
-                len_lay = len(ex['cond_op']) * 2
-                len_lay_list.append(len_lay)
-                len_tgt_list.append(
-                    1 + has_agg + 1 + len_lay + len(ex['cond_op']) * 2)
+        # len_lay_list = []
+        # len_tgt_list = []
+        # for ex in examples:
+        #     has_agg = 0 if int(ex['agg']) == 0 else 1
+        #     if len(ex['cond_op']) == 0:
+        #         len_lay_list.append(0)
+        #         len_tgt_list.append(1 + has_agg + 1)
+        #     else:
+        #         len_lay = len(ex['cond_op']) * 2
+        #         len_lay_list.append(len_lay)
+        #         len_tgt_list.append(
+        #             1 + has_agg + 1 + len_lay + len(ex['cond_op']) * 2)
 
         # Peek at the first to see which fields are used.
+        # a example is dict such as: {'cond_span_r_loss': [8], 'cond_span_r': [8], ..., 'name':[data]}
+        # examples is a list of example
         ex = examples[0]
         keys = ex.keys()
+        
+        # !!! This is very important because when we create torchtext example we need a list of Fields that
+        # is [(name, field_item),()...] not just [field_item, ...]
         fields = [(k, fields[k])
-                  for k in (list(keys) + ["indices"])]
-
+                  for k in (list(keys) + ["indices"])]  # be carefull of the order
+        
+        # return the iterator of Example object of torchtext
+        # As to example object, you can find the data from its attribute such as: example.cond_span_l
+        # (line 221)example.cond_span_l equal to the original value in dict 'example'(line 207)
         def construct_final(examples):
             for i, ex in enumerate(examples):
                 yield torchtext.data.Example.fromlist(
-                    [ex[k] for k in keys] + [i],
+                    # data from examples + a number i
+                    # !!! the order of list[ex] must match the order of fields
+                    [ex[k] for k in keys] + [i], 
                     fields)
 
         def filter_pred(example):
             return True
 
         super(TableDataset, self).__init__(
-            construct_final(examples), fields, filter_pred)
+            # filter_pred (callable or None): Use only examples for which
+            # filter_pred(example) is True, or use all examples if None.
+            # Default is None.
+            construct_final(examples), fields, filter_pred) 
+            
 
     def _read_annotated_file(self, opt, js_list, field, filter_ex):
         """
@@ -234,7 +272,7 @@ class TableDataset(torchtext.data.Dataset):
                      for line in js_list)
         elif field in ('lay',):
             def _lay(where_list):
-                return ' '.join([str(op) for col, op, cond in where_list])
+                return ' '.join([str(op) for col, op, cond in where_list]) # every where_list contain 3 element whose third element(cond) is a dict
             lines = (_lay(line['query']['conds'])
                      for line in js_list)
         elif field in ('cond_op',):
@@ -246,8 +284,10 @@ class TableDataset(torchtext.data.Dataset):
         elif field in ('cond_span',):
             def _find_span(q_list, where_list):
                 r_list = []
-                for col, op, cond in where_list:
+                for col, op, cond in where_list: # every where_list contain 3 element whose third element(cond) is a dict
+                    #tk_list is a list and the content of the cond
                     tk_list = cond['words']
+
                     # find exact match first
                     if len(tk_list) <= len(q_list):
                         match_list = []
@@ -257,12 +297,13 @@ class TableDataset(torchtext.data.Dataset):
                         if len(match_list) > 0:
                             r_list.append(rnd.choice(match_list))
                             continue
-                        elif (opt is not None) and opt.span_exact_match:
-                            return None
+                        elif (opt is not None) and opt.span_exact_match:#span_exact_match stop it go to 'else'
+                            return None                                 #I think here should not be delete this line
                         else:
                             # do not have exact match, then fuzzy match (w/o considering order)
                             for len_span in range(len(tk_list), len(tk_list) + 2):
                                 for st in range(0, len(q_list) - len_span + 1):
+                                     #if the content (word list) in q_list[st:st + len_span] contain the tk_list:
                                     if set(tk_list) <= set(q_list[st:st + len_span]):
                                         match_list.append(
                                             (st, st + len_span - 1))
@@ -294,6 +335,8 @@ class TableDataset(torchtext.data.Dataset):
         for line in lines:
             yield line
 
+    # construct a iterator (similar to list) that contain a lot of dictionary
+    # every dictionary contain the same key and different value.
     def _construct_examples(self, lines, side):
         for words in lines:
             example_dict = {side: words}
@@ -331,10 +374,19 @@ class TableDataset(torchtext.data.Dataset):
     @staticmethod
     def get_fields():
         fields = {}
+        # include_lengths=True, when you get your batch: for b, batch in enumerate(train_iter):
+        # You can get data and len from: src, len_src = batch.src
+        # If include_lengths=False, you can only get src from: src = batch.src
+        # The len_src is a list that his element tell the length of the element of src.
+        # src in here is the nature language.
         fields["src"] = torchtext.data.Field(
             pad_token=PAD_WORD, include_lengths=True)
         fields["ent"] = torchtext.data.Field(
             pad_token=PAD_WORD, include_lengths=False)
+        
+        # defualt batch_first is False. if it is False in fields["src"], src[0] is the first word of every sentence in one batch
+        # src[*][0] is the first sentence in one batch.
+        # If batch_first is True in fields["src"], src[0] is the first sentence.
         fields["agg"] = torchtext.data.Field(
             sequential=False, use_vocab=False, batch_first=True)
         fields["sel"] = torchtext.data.Field(
@@ -346,7 +398,7 @@ class TableDataset(torchtext.data.Dataset):
         fields["tbl_mask"] = torchtext.data.Field(
             use_vocab=False, tensor_type=torch.ByteTensor, batch_first=True, pad_token=1)
         fields["lay"] = torchtext.data.Field(
-            sequential=False, batch_first=True)
+            sequential=False, batch_first=True) # a string, every query is one string, so do not need pad
         fields["cond_op"] = torchtext.data.Field(
             include_lengths=True, pad_token=PAD_WORD)
         fields["cond_col"] = torchtext.data.Field(
@@ -367,16 +419,23 @@ class TableDataset(torchtext.data.Dataset):
 
     @staticmethod
     def build_vocab(train, dev, test, opt):
+        # This function will build four vocab including: 
+        # one come from 'src', 'tbl'. And you can find this vocab from fields["src"] or fields["tbl"]. It is the same.
+        # other three come from "ent", "lay", "cond_op"
+
         fields = train.fields
 
         merge_list = []
         merge_name_list = ('src', 'tbl')
-        for split in (dev, test, train,):
+        for split in (dev, test, train,):   #split seperately equal to dev, test, train
             for merge_name_it in merge_name_list:
                 fields[merge_name_it].build_vocab(
                     split, max_size=opt.src_vocab_size, min_freq=0)
                 merge_list.append(fields[merge_name_it].vocab)
+        
         # build vocabulary only based on the training set
+        # we have defined the unique field to subset of train in __init__ funtion of TableDataset
+        # So the dataset of train know which part of data should match to fields["ent"]
         fields["ent"].build_vocab(
             train, max_size=opt.src_vocab_size, min_freq=0)
         fields["lay"].build_vocab(
@@ -388,3 +447,4 @@ class TableDataset(torchtext.data.Dataset):
         merged_vocab = merge_vocabs(merge_list, vocab_size=opt.src_vocab_size)
         for merge_name_it in merge_name_list:
             fields[merge_name_it].vocab = merged_vocab
+        
