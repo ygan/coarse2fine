@@ -90,10 +90,10 @@ def preprocess_opts(parser):
 
 def train_opts(parser):
     # Model loading/saving options
-    parser.add_argument('-data', default='/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/',
+    parser.add_argument('-data', default='/home/yj/Documents/Python/Github/coarse2fine/data_model/wikisql/',
                         help="""Path prefix to the "train.pt" and
                         "valid.pt" file path from preprocess.py""")
-    parser.add_argument('-save_dir', default='/home/yj/Documents/Python/Pytorch/coarse2fine/data_model/wikisql/',
+    parser.add_argument('-save_dir', default='/home/yj/Documents/Python/Github/coarse2fine/data_model/wikisql/',
                         help="Model save dir")
     parser.add_argument('-train_from', default='', type=str,
                         help="""If training from a checkpoint then this is the
