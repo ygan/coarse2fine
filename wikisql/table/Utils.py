@@ -84,3 +84,5 @@ def tensorToCsv2D(tensor,path=None,token=','):
                 f.write(str(z[i]))
                 f.write(token)
             f.write('\r')
+    else:
+        raise "Not support 3D tensor."
